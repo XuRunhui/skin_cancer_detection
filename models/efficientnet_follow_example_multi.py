@@ -25,16 +25,73 @@ from sklearn.metrics import roc_curve, auc
 from sklearn.utils import resample
 from torchvision.models import efficientnet_b0, efficientnet_b7
 
+# class Discriminator(nn.Module):
+#     def __init__(self, ngpu, nc = 3, ndf = 64):
+#         super(Discriminator, self).__init__()
+#         self.ngpu = ngpu
+#         self.main = nn.Sequential(
+#             # input is (nc) x 64 x 64
+#             nn.Conv2d(nc, ndf, 4, 2, 1, bias=False),
+#             nn.LeakyReLU(0.2, inplace=True),
+#             # state size. (ndf) x 32 x 32
+#             nn.Conv2d(ndf, ndf * 2, 4, 2, 1, bias=False),
+#             nn.BatchNorm2d(ndf * 2),
+#             nn.LeakyReLU(0.2, inplace=True),
+#             # state size. (ndf*2) x 16 x 16
+#             nn.Conv2d(ndf * 2, ndf * 4, 4, 2, 1, bias=False),
+#             nn.BatchNorm2d(ndf * 4),
+#             nn.LeakyReLU(0.2, inplace=True),
+#             # state size. (ndf*4) x 8 x 8
+#             nn.Conv2d(ndf * 4, ndf * 8, 4, 2, 1, bias=False),
+#             nn.BatchNorm2d(ndf * 8),
+#             nn.LeakyReLU(0.2, inplace=True),
+#             # state size. (ndf*8) x 4 x 4
+#             nn.Conv2d(ndf * 8, ndf * 8, 4, 2, 1, bias=False),
+#             nn.BatchNorm2d(ndf * 8),
+#             nn.LeakyReLU(0.2, inplace=True),
+
+#             nn.Conv2d(ndf * 8, ndf * 4, 4, 2, 1, bias=False),
+#             nn.BatchNorm2d(ndf * 4),
+#             nn.LeakyReLU(0.2, inplace=True),
+            
+#             nn.Conv2d(ndf * 4, 1, 4, 1, 0, bias=False),
+#             nn.Sigmoid()
+#         )
+
+#     def forward(self, input):
+#         if input.is_cuda and self.ngpu > 1:
+#             output = nn.parallel.data_parallel(self.main, input, range(self.ngpu))
+#         else:
+#             output = self.main(input)
+
+#         return output.view(-1, 1).squeeze(1)
+
+# def weights_init(m):
+#     classname = m.__class__.__name__
+#     if classname.find('Conv') != -1:
+#         torch.nn.init.normal_(m.weight, 0.0, 0.02)
+#     elif classname.find('BatchNorm') != -1:
+#         torch.nn.init.normal_(m.weight, 1.0, 0.02)
+#         torch.nn.init.zeros_(m.bias)
+
+
+
 class CombinedModel(nn.Module):
     def __init__(self, num_classes, categorical_dims, num_numerical_features):
         super(CombinedModel, self).__init__()
         # self.efficientnet = EfficientNet.from_pretrained('efficientnet-b0')
+
+
         model = efficientnet_b0(pretrained=False) 
         model.load_state_dict(torch.load('./efficientnet_b0.pth'))
-        model = efficientnet_b7(pretrained=False) 
-        model.load_state_dict(torch.load('./efficientnet_b7.pth'))
+
+
+        # model = efficientnet_b7(pretrained=False) 
+        # model.load_state_dict(torch.load('./efficientnet_b7.pth'))
         self.efficientnet = model
         # 冻结 EfficientNet 的卷积层
+
+
         for param in self.efficientnet.parameters():
             param.requires_grad = False
         
@@ -43,9 +100,15 @@ class CombinedModel(nn.Module):
         # self.efficientnet._fc = nn.Identity()  # 移除原来的全连接层
 
         in_features = self.efficientnet.classifier[1].in_features
-        
+        # in_features = 1
         # 移除原来的全连接层
         self.efficientnet.classifier = nn.Identity()
+
+
+        # netD = Discriminator(1)
+        # netD.apply(weights_init)
+
+        # self.model = netD
         self.image_fc = nn.Linear(in_features, 512)
         
         # # 处理类别数据
@@ -96,12 +159,25 @@ class CombinedModel(nn.Module):
         
         return x
     
+# def get_transform():
+#     transform = transforms.Compose([
+#         transforms.Resize(256, interpolation=InterpolationMode.BICUBIC),
+#         transforms.CenterCrop(224),
+#         transforms.ToTensor(),
+#         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+#     ])
+#     return transform
+
 def get_transform():
     transform = transforms.Compose([
         transforms.Resize(256, interpolation=InterpolationMode.BICUBIC),
         transforms.CenterCrop(224),
+        transforms.RandomRotation(30),  # 随机旋转 -30 到 30 度
+        transforms.RandomHorizontalFlip(p=0.5),  # 以 50% 概率水平翻转
+        transforms.RandomVerticalFlip(p=0.5),  # 以 50% 概率垂直翻转
+        # transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0),  # 随机改变亮度、对比度和饱和度
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
     return transform
 
@@ -123,102 +199,11 @@ def get_efficientnet():
 
  
 
-# class CustomImageDataset(Dataset):
-#     def __init__(self, csv_file, hdf5_file, transform=None, mode='train', train_data=None):
-#         self.transform = transform
-#         self.hdf5_file = hdf5_file
-#         self.label_encoders = {}
-#         self.categorical_vars = ['sex', 'anatom_site_general', 'image_type', 'tbp_tile_type', 'tbp_lv_location', 
-#                                  'tbp_lv_location_simple', 'attribution', 'copyright_license', 'lesion_id', 
-#                                  'iddx_full', 'iddx_1', 'iddx_2', 'iddx_3', 'iddx_4', 'iddx_5', 'mel_mitotic_index']
-        
-#         self.numerical_vars = ['age_approx', 'clin_size_long_diam_mm', 'tbp_lv_A', 'tbp_lv_Aext', 'tbp_lv_B', 
-#                                'tbp_lv_Bext', 'tbp_lv_C', 'tbp_lv_Cext', 'tbp_lv_H', 'tbp_lv_Hext', 'tbp_lv_L', 
-#                                'tbp_lv_Lext', 'tbp_lv_areaMM2', 'tbp_lv_area_perim_ratio', 'tbp_lv_color_std_mean', 
-#                                'tbp_lv_deltaA', 'tbp_lv_deltaB', 'tbp_lv_deltaL', 'tbp_lv_deltaLB', 'tbp_lv_deltaLBnorm', 
-#                                'tbp_lv_eccentricity', 'tbp_lv_minorAxisMM', 'tbp_lv_nevi_confidence', 'tbp_lv_norm_border', 
-#                                'tbp_lv_norm_color', 'tbp_lv_perimeterMM', 'tbp_lv_radial_color_std_max', 'tbp_lv_stdL', 
-#                                'tbp_lv_stdLExt', 'tbp_lv_symm_2axis', 'tbp_lv_symm_2axis_angle', 'tbp_lv_x', 'tbp_lv_y', 
-#                                'tbp_lv_z', 'tbp_lv_dnn_lesion_confidence']
-        
-#         self.annotations = self.get_full_dataframe(csv_file)
-#         self.mode = mode
-        
-#         if mode == 'train':
-#             self.encode_labels()
-#             self.normalize_numerical_data()
-#         elif mode == 'test' and train_data is not None:
-#             self.encode_labels(train_data)
-#             self.normalize_numerical_data(train_data)
-
-#     def get_full_dataframe(self, path):
-#         df = pd.read_csv(path)
-#         # 同样的预处理
-#         df['lesion_id'] = df['lesion_id'].apply(lambda x: 'Not Null' if pd.notnull(x) else 'Null')
-        
-#         for category in ['sex', 'anatom_site_general']:
-#             dis = df[category].value_counts(normalize=True)
-#             df[category] = df[category].fillna(pd.Series(np.random.choice(dis.index, size=len(df), p=dis.values)))
-        
-#         df['age_approx'] = df['age_approx'].fillna(df['age_approx'].mean())
-        
-#         df['iddx_2'] = df['iddx_2'].fillna(df['iddx_1'])
-#         df['iddx_3'] = df['iddx_3'].fillna(df['iddx_2'])
-#         df['iddx_4'] = df['iddx_4'].fillna(df['iddx_3'])
-#         df['iddx_5'] = df['iddx_5'].fillna(df['iddx_4'])
-
-#         return df
-
-#     def encode_labels(self, train_data=None):
-#         if self.mode == 'train':
-#             for col in self.categorical_vars:
-#                 le = LabelEncoder()
-#                 self.annotations[col] = le.fit_transform(self.annotations[col])
-#                 self.label_encoders[col] = le
-#         elif self.mode == 'test' and train_data is not None:
-#             for col in self.categorical_vars:
-#                 le = train_data.label_encoders[col]
-#                 self.annotations[col] = le.transform(self.annotations[col])
-
-#     def normalize_numerical_data(self, train_data=None):
-#         if self.mode == 'train':
-#             scaler = MinMaxScaler()
-#             self.annotations[self.numerical_vars] = scaler.fit_transform(self.annotations[self.numerical_vars])
-#         elif self.mode == 'test' and train_data is not None:
-#             scaler = MinMaxScaler()
-#             scaler.fit(train_data.annotations[train_data.numerical_vars])
-#             self.annotations[self.numerical_vars] = scaler.transform(self.annotations[self.numerical_vars])
-
-#     def __len__(self):
-#         return len(self.annotations)
-
-#     def __getitem__(self, idx):
-#         # Load image
-#         with h5py.File(self.hdf5_file, 'r') as f:
-#             isic_id = self.annotations.iloc[idx]["isic_id"]
-#             if isic_id in f:
-#                 image_data = f[isic_id][()]
-#                 image = Image.open(io.BytesIO(image_data)).convert("RGB")
-
-#         if self.transform:
-#             image = self.transform(image)
-
-#         # Load label
-#         label = torch.tensor(int(self.annotations.iloc[idx]["target"]))
-
-#         # Load categorical data
-#         numerical_df = self.annotations[self.numerical_vars].iloc[idx]
-#         categorical_df = self.annotations[self.categorical_vars].iloc[idx]
-
-#         numerical_data = torch.tensor(numerical_df.values, dtype=torch.float)
-#         categorical_data = torch.tensor(categorical_df.values, dtype=torch.long)
-
-#         return image, categorical_data, numerical_data, label
-
-
 class CustomImageDataset(Dataset):
-    def __init__(self, csv_file, hdf5_file, transform=None, mode='train', train_data=None):
+    def __init__(self, csv_file, hdf5_file, fake_data = None, img_dir = None, transform=None, mode='train', train_data=None):
         # self.img_dir = img_dir
+        self.fake_data = fake_data
+        self.img_dir = img_dir
         self.mode = mode
         if self.mode == "train":
             print("train data init begin")
@@ -226,7 +211,7 @@ class CustomImageDataset(Dataset):
             print("val data init begin")
 
         self.transform = transform
-        self.hdf5_file = hdf5_file
+        self.hdf5_file = h5py.File(hdf5_file, 'r')
         self.label_encoders = {}
         
         self.categorical_vars = ['sex', 'anatom_site_general',
@@ -251,7 +236,7 @@ class CustomImageDataset(Dataset):
             self.annotations = self.get_full_dataframe(csv_file)
             self.encode_labels()
             self.normalize_numerical_data()
-        elif mode == 'val' and train_data is not None:
+        elif mode == 'val' or mode == 'test' and train_data is not None:
             print("getting full dataframe")
             self.annotations = self.get_full_dataframe(csv_file, train_data=train_data)
             print("encoding labels")
@@ -270,45 +255,73 @@ class CustomImageDataset(Dataset):
         # print(categorical_df.values.dtype)
 
     def __len__(self):
-        return len(self.annotations)
+        if self.fake_data is None:
+            return len(self.annotations)
+        else:
+            return len(self.annotations) + len(self.fake_data)
 
     def __getitem__(self, idx):
         # Load image
         # img_path = os.path.join(self.img_dir, self.annotations.iloc[idx]["isic_id"] + ".jpg")
         # image = Image.open(img_path).convert("RGB")
 
-        with h5py.File(self.hdf5_file, 'r') as f:
+        if idx < len(self.annotations):
             isic_id = self.annotations.iloc[idx]["isic_id"]
 
-            if isic_id in f:
-                image = f[isic_id]
+            if isic_id in self.hdf5_file:
+                image = self.hdf5_file[isic_id]
                 # Check if the data is numerical before conversion
                 image_data = image[()]
                 # 将字节字符串解码为图像
                 image = Image.open(io.BytesIO(image_data)).convert("RGB")
-                
+                    
 
-        if self.transform:
-            image = self.transform(image)
+            if self.transform:
+                image = self.transform(image)
 
-        # Load label
-        label = torch.tensor(int(self.annotations.iloc[idx]["target"]))
+            # Load categorical data
 
-        # Load categorical data
+            numerical_df = self.annotations[self.numerical_vars]
+            categorical_df = self.annotations[self.categorical_vars]
+            numerical_df = numerical_df.iloc[idx]
+            categorical_df = categorical_df.iloc[idx]
 
-        numerical_df = self.annotations[self.numerical_vars]
-        categorical_df = self.annotations[self.categorical_vars]
-        numerical_df = numerical_df.iloc[idx]
-        categorical_df = categorical_df.iloc[idx]
+            numerical_data = torch.tensor(numerical_df.values, dtype=torch.float)
+            categorical_data = torch.tensor(categorical_df.values, dtype=torch.long)
 
-        numerical_data = torch.tensor(numerical_df.values, dtype=torch.float)
-        categorical_data = torch.tensor(categorical_df.values, dtype=torch.long)
+            # Load numerical data
+            if self.mode in ['train', 'val']:
+                label = torch.tensor(int(self.annotations.iloc[idx]["target"]))
+                return image, categorical_data, numerical_data, label
 
-        # Load numerical data
+            elif self.mode == 'test':
+                isic_id = self.annotations.iloc[idx]["isic_id"]
+                return image, categorical_data, numerical_data, isic_id
+            
+        else:        
+            fake_idx = idx - len(self.annotations)
+
+            img_path = os.path.join(self.img_dir, f"{fake_idx + 1}.jpg")
+            image = Image.open(img_path).convert("RGB")
+
+            if self.transform:
+                image = self.transform(image)
+
+            numerical_df = self.fake_data[self.numerical_vars]
+            categorical_df = self.fake_data[self.categorical_vars]
+            numerical_df = numerical_df.iloc[fake_idx]
+            categorical_df = categorical_df.iloc[fake_idx]
+
+            numerical_data = torch.tensor(numerical_df.values, dtype=torch.float)
+            categorical_data = torch.tensor(categorical_df.values, dtype=torch.long)
+
+            # Load numerical data
+            if self.mode in ['train', 'val']:
+                label = torch.tensor(int(self.fake_data.iloc[fake_idx]["target"]))
+                return image, categorical_data, numerical_data, label
+
+
         
-
-        return image, categorical_data, numerical_data, label
-
 
     def get_full_dataframe(self, df, train_data=None):
         def fill_missing_with_distribution(series, distribution):
@@ -319,7 +332,7 @@ class CustomImageDataset(Dataset):
         
         if self.mode == 'train':
             df['lesion_id'] = df['lesion_id'].apply(lambda x: 1 if pd.notnull(x) else 0)
-        elif self.mode == 'val':
+        elif self.mode != 'train':
             for category in ['lesion_id', 'mel_mitotic_index']:
                 dis = train_data.annotations[category].value_counts(normalize=True)
                 generated_lesion_ids = np.random.choice(dis.index, size=len(df), p=dis.values)
@@ -337,13 +350,13 @@ class CustomImageDataset(Dataset):
             df['iddx_3'] = df['iddx_3'].fillna(df['iddx_2'])
             df['iddx_4'] = df['iddx_4'].fillna(df['iddx_3'])
             df['iddx_5'] = df['iddx_5'].fillna(df['iddx_4'])
-        elif self.mode == 'val':
+        elif self.mode != 'train':
             dis = train_data.annotations['iddx_full'].value_counts(normalize=True)
             generated_lesion_ids = np.random.choice(dis.index, size=len(df), p=dis.values)
             df['iddx_full'] = generated_lesion_ids
             for d in ['iddx_1', 'iddx_2', 'iddx_3', 'iddx_4', 'iddx_5']:
                 df[d] = df['iddx_full']
-        if self.mode == 'val':
+        if self.mode != 'train':
             tbp_lv_dnn_lesion_confidence_mean = train_data.annotations['tbp_lv_dnn_lesion_confidence'].mean()
             tbp_lv_dnn_lesion_confidence_std = train_data.annotations['tbp_lv_dnn_lesion_confidence'].std()
 
@@ -357,7 +370,7 @@ class CustomImageDataset(Dataset):
                 le = LabelEncoder()
                 self.annotations[col] = le.fit_transform(self.annotations[col])
                 self.label_encoders[col] = le
-        elif self.mode == 'val' and train_data is not None:
+        elif self.mode != 'train' and train_data is not None:
             for col in self.categorical_vars:
                 le = train_data.label_encoders[col]
                 mask = ~self.annotations[col].isin(le.classes_)
@@ -382,10 +395,181 @@ class CustomImageDataset(Dataset):
         if self.mode == 'train':
             scaler = MinMaxScaler()
             self.annotations[self.numerical_vars] = scaler.fit_transform(self.annotations[self.numerical_vars])
-        elif self.mode == 'val' and train_data is not None:
+        elif self.mode != 'train' and train_data is not None:
             scaler = MinMaxScaler()
             scaler.fit(train_data.annotations[train_data.numerical_vars])
             self.annotations[self.numerical_vars] = scaler.transform(self.annotations[self.numerical_vars])
+
+# class CustomImageDataset(Dataset):
+#     def __init__(self, csv_file, hdf5_file, transform=None, mode='train', train_data=None):
+#         # self.img_dir = img_dir
+#         self.mode = mode
+#         if self.mode == "train":
+#             print("train data init begin")
+#         elif self.mode == "val":
+#             print("val data init begin")
+
+#         self.transform = transform
+#         self.hdf5_file = hdf5_file
+#         self.label_encoders = {}
+        
+#         self.categorical_vars = ['sex', 'anatom_site_general',
+#                              'image_type', 'tbp_tile_type', 'tbp_lv_location', 
+#                              'tbp_lv_location_simple', 'attribution', 'copyright_license', 
+#                              'lesion_id', 'iddx_full', 'iddx_1', 'iddx_2', 'iddx_3', 
+#                              'iddx_4', 'iddx_5', 'mel_mitotic_index']
+        
+#         self.numerical_vars = ['age_approx', 'clin_size_long_diam_mm', 'tbp_lv_A', 
+#                           'tbp_lv_Aext', 'tbp_lv_B', 'tbp_lv_Bext', 'tbp_lv_C', 
+#                           'tbp_lv_Cext', 'tbp_lv_H', 'tbp_lv_Hext', 'tbp_lv_L', 
+#                           'tbp_lv_Lext', 'tbp_lv_areaMM2', 'tbp_lv_area_perim_ratio', 
+#                           'tbp_lv_color_std_mean', 'tbp_lv_deltaA', 'tbp_lv_deltaB', 
+#                           'tbp_lv_deltaL', 'tbp_lv_deltaLB', 'tbp_lv_deltaLBnorm', 
+#                           'tbp_lv_eccentricity', 'tbp_lv_minorAxisMM', 'tbp_lv_nevi_confidence', 
+#                           'tbp_lv_norm_border', 'tbp_lv_norm_color', 'tbp_lv_perimeterMM', 
+#                           'tbp_lv_radial_color_std_max', 'tbp_lv_stdL', 'tbp_lv_stdLExt', 
+#                           'tbp_lv_symm_2axis', 'tbp_lv_symm_2axis_angle', 'tbp_lv_x', 
+#                           'tbp_lv_y', 'tbp_lv_z', 'tbp_lv_dnn_lesion_confidence']
+
+#         if mode == 'train':
+#             self.annotations = self.get_full_dataframe(csv_file)
+#             self.encode_labels()
+#             self.normalize_numerical_data()
+#         elif mode == 'val' and train_data is not None:
+#             print("getting full dataframe")
+#             self.annotations = self.get_full_dataframe(csv_file, train_data=train_data)
+#             print("encoding labels")
+#             self.encode_labels(train_data)
+#             print("normalizing numerical data")
+#             self.normalize_numerical_data(train_data)
+
+
+#         if self.mode == "train":
+#             print("train data init done")
+#         elif self.mode == "val":
+#             print("val data init done")
+#         # print(numerical_df.isnull().sum())
+#         # print(categorical_df.isnull().sum())
+#         # print(numerical_df.values.dtype)
+#         # print(categorical_df.values.dtype)
+
+#     def __len__(self):
+#         return len(self.annotations)
+
+#     def __getitem__(self, idx):
+#         # Load image
+#         # img_path = os.path.join(self.img_dir, self.annotations.iloc[idx]["isic_id"] + ".jpg")
+#         # image = Image.open(img_path).convert("RGB")
+
+#         with h5py.File(self.hdf5_file, 'r') as f:
+#             isic_id = self.annotations.iloc[idx]["isic_id"]
+
+#             if isic_id in f:
+#                 image = f[isic_id]
+#                 # Check if the data is numerical before conversion
+#                 image_data = image[()]
+#                 # 将字节字符串解码为图像
+#                 image = Image.open(io.BytesIO(image_data)).convert("RGB")
+                
+
+#         if self.transform:
+#             image = self.transform(image)
+
+#         # Load label
+#         label = torch.tensor(int(self.annotations.iloc[idx]["target"]))
+
+#         # Load categorical data
+
+#         numerical_df = self.annotations[self.numerical_vars]
+#         categorical_df = self.annotations[self.categorical_vars]
+#         numerical_df = numerical_df.iloc[idx]
+#         categorical_df = categorical_df.iloc[idx]
+
+#         numerical_data = torch.tensor(numerical_df.values, dtype=torch.float)
+#         categorical_data = torch.tensor(categorical_df.values, dtype=torch.long)
+
+#         # Load numerical data
+        
+
+#         return image, categorical_data, numerical_data, label
+
+
+#     def get_full_dataframe(self, df, train_data=None):
+#         def fill_missing_with_distribution(series, distribution):
+#             missing_indices = series[series.isna()].index
+#             filled_values = np.random.choice(distribution.index, size=len(missing_indices), p=distribution.values)
+#             series.loc[missing_indices] = filled_values
+#             return series
+        
+#         if self.mode == 'train':
+#             df['lesion_id'] = df['lesion_id'].apply(lambda x: 1 if pd.notnull(x) else 0)
+#         elif self.mode == 'val':
+#             for category in ['lesion_id', 'mel_mitotic_index']:
+#                 dis = train_data.annotations[category].value_counts(normalize=True)
+#                 generated_lesion_ids = np.random.choice(dis.index, size=len(df), p=dis.values)
+#                 df[category] = generated_lesion_ids
+
+#         for category in ['sex', 'anatom_site_general']:
+#             dis = df[category].value_counts(normalize=True)
+#             df[category] = fill_missing_with_distribution(df[category], dis)
+        
+#         mean_age = df['age_approx'].mean()
+#         df['age_approx'] = df['age_approx'].fillna(mean_age)
+        
+#         if self.mode == 'train':
+#             df['iddx_2'] = df['iddx_2'].fillna(df['iddx_1'])
+#             df['iddx_3'] = df['iddx_3'].fillna(df['iddx_2'])
+#             df['iddx_4'] = df['iddx_4'].fillna(df['iddx_3'])
+#             df['iddx_5'] = df['iddx_5'].fillna(df['iddx_4'])
+#         elif self.mode == 'val':
+#             dis = train_data.annotations['iddx_full'].value_counts(normalize=True)
+#             generated_lesion_ids = np.random.choice(dis.index, size=len(df), p=dis.values)
+#             df['iddx_full'] = generated_lesion_ids
+#             for d in ['iddx_1', 'iddx_2', 'iddx_3', 'iddx_4', 'iddx_5']:
+#                 df[d] = df['iddx_full']
+#         if self.mode == 'val':
+#             tbp_lv_dnn_lesion_confidence_mean = train_data.annotations['tbp_lv_dnn_lesion_confidence'].mean()
+#             tbp_lv_dnn_lesion_confidence_std = train_data.annotations['tbp_lv_dnn_lesion_confidence'].std()
+
+#             df['tbp_lv_dnn_lesion_confidence'] = np.random.normal(loc=tbp_lv_dnn_lesion_confidence_mean, scale=tbp_lv_dnn_lesion_confidence_std, size = len(df))
+
+#         return df
+    
+#     def encode_labels(self, train_data=None):
+#         if self.mode == 'train':
+#             for col in self.categorical_vars:
+#                 le = LabelEncoder()
+#                 self.annotations[col] = le.fit_transform(self.annotations[col])
+#                 self.label_encoders[col] = le
+#         elif self.mode == 'val' and train_data is not None:
+#             for col in self.categorical_vars:
+#                 le = train_data.label_encoders[col]
+#                 mask = ~self.annotations[col].isin(le.classes_)
+    
+#                 # 对新标签进行随机替换
+#                 if mask.any():
+#                     self.annotations.loc[mask, col] = np.random.choice(
+#                         le.classes_, size=mask.sum(), p=train_data.annotations[col].value_counts(normalize=True).values
+#                     )
+                
+#                 # 进行编码
+#                 self.annotations[col] = le.transform(self.annotations[col])
+#                 print(f"Label encoder for {col} has {len(le.classes_)} classes")
+
+#                 # self.annotations[col] = self.annotations[col].apply(
+#                 #     lambda x: x if x in le.classes_ else np.random.choice(le.classes_, p=train_data.annotations[col].value_counts(normalize=True).values)
+#                 # )
+#                 # self.annotations[col] = le.transform(self.annotations[col])
+#                 # print(f"Label encoder for {col} has {len(le.classes_)} classes")
+
+#     def normalize_numerical_data(self, train_data=None):
+#         if self.mode == 'train':
+#             scaler = MinMaxScaler()
+#             self.annotations[self.numerical_vars] = scaler.fit_transform(self.annotations[self.numerical_vars])
+#         elif self.mode == 'val' and train_data is not None:
+#             scaler = MinMaxScaler()
+#             scaler.fit(train_data.annotations[train_data.numerical_vars])
+#             self.annotations[self.numerical_vars] = scaler.transform(self.annotations[self.numerical_vars])
 
 
 
@@ -586,6 +770,8 @@ def load_train_objs():
     mytransform = get_transform()
     csv_file = pd.read_csv("../data/train-metadata.csv")
     train_df, val_df = train_test_split(csv_file, test_size=0.2, random_state=42)
+
+
     train_df_majority = train_df[train_df.target==0]
     train_df_minority = train_df[train_df.target==1]
     train_df_minority_upsampled = resample(train_df_minority, 
@@ -593,10 +779,11 @@ def load_train_objs():
                                          n_samples=len(train_df_majority),    # to match majority class
                                          random_state=42) # reproducible results
     train_df_upsampled = pd.concat([train_df_majority, train_df_minority_upsampled])
-
     train_df_upsampled = train_df_upsampled.sample(frac=1, random_state = 42).reset_index(drop=True)
 
-    train_set = CustomImageDataset(csv_file=train_df_upsampled, hdf5_file="../data/train-image.hdf5", transform=mytransform)
+
+    fake_data = pd.read_csv("../data/resampled_data.csv")
+    train_set = CustomImageDataset(csv_file=train_df, hdf5_file="../data/train-image.hdf5", transform=mytransform, fake_data=fake_data, img_dir="../data/fake_images", mode='train')
     val_set = CustomImageDataset(csv_file=val_df, hdf5_file="../data/train-image.hdf5", transform=mytransform, mode='val', train_data=train_set)
     # train_loader = DataLoader(train_set, batch_size=32, shuffle=True)
     categorical_dims = [2, 5, 1, 2, 21, 8, 7, 3, 2, 52, 3, 15, 28, 52, 52, 7]
@@ -618,7 +805,7 @@ def load_train_objs():
     else:
         print("No existing model found, starting from scratch.")
 
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = optim.Adam(model.parameters(), lr=0.0001)
 
     return train_set, val_set, model, optimizer
 
@@ -654,10 +841,10 @@ def main(device, total_epochs, save_every, batch_size):
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[device])
     
     train_data, val_data = prepare_dataloader(train_set, val_set, batch_size)
-    class_weights = torch.tensor([0.1, 0.9]).to(device)
+    class_weights = torch.tensor([0.5, 0.5]).to(device)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
-    best_loss = 0.9361
-    trainer = Trainer(model, train_data, val_data, optimizer, criterion, device, total_epochs, save_every, best_loss)
+
+    trainer = Trainer(model, train_data, val_data, optimizer, criterion, device, total_epochs, save_every)
     trainer.train(total_epochs)
     
     dist.destroy_process_group()

@@ -11,6 +11,73 @@ import torch.utils.data
 import torchvision.datasets as dset
 import torchvision.transforms as transforms
 import torchvision.utils as vutils
+from PIL import Image
+from torch.utils.data import Dataset
+import pandas as pd
+import h5py
+from torchvision.transforms import InterpolationMode
+import io
+
+def get_transform():
+    transform = transforms.Compose([
+        transforms.Resize(256, interpolation=InterpolationMode.BICUBIC),
+        transforms.CenterCrop(256),
+        transforms.RandomRotation(30),  # 随机旋转 -30 到 30 度
+        transforms.RandomHorizontalFlip(p=0.5),  # 以 50% 概率水平翻转
+        transforms.RandomVerticalFlip(p=0.5),  # 以 50% 概率垂直翻转
+        # transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0),  # 随机改变亮度、对比度和饱和度
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+    return transform
+
+def get_data_aug():
+    transform = transforms.Compose([
+        transforms.Resize(256, interpolation=InterpolationMode.BICUBIC),
+        transforms.CenterCrop(256),
+        transforms.RandomRotation(30),  # 随机旋转 -30 到 30 度
+        transforms.RandomHorizontalFlip(p=0.5),  # 以 50% 概率水平翻转
+        transforms.RandomVerticalFlip(p=0.5),  # 以 50% 概率垂直翻转
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),  # 随机改变亮度、对比度和饱和度
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+    return transform
+
+
+class CustomDataset(Dataset):
+    def __init__(self, csv_file, hdf5_file, transform=None, target_label=1):
+        """
+        Args:
+            csv_file (string): Path to the CSV file with annotations.
+            root_dir (string): Directory with all the images.
+            transform (callable, optional): Optional transform to be applied on a sample.
+            target_label (int, optional): Target label to filter and load specific class images.
+        """
+        self.annotations = pd.read_csv(csv_file)
+        self.hdf5_file = h5py.File(hdf5_file, 'r')
+        self.transform = transform
+        
+        # 只保留目标标签的数据
+        self.annotations = self.annotations[self.annotations['target'] == target_label]
+
+    def __len__(self):
+        return len(self.annotations)
+
+    def __getitem__(self, idx):
+        isic_id = self.annotations.iloc[idx]["isic_id"]
+        if isic_id in self.hdf5_file:
+            image = self.hdf5_file[isic_id]
+            # Check if the data is numerical before conversion
+            image_data = image[()]
+            # 将字节字符串解码为图像
+            image = Image.open(io.BytesIO(image_data)).convert("RGB")
+                
+
+        if self.transform:
+            image = self.transform(image)
+
+        return image, 1
 
 
 parser = argparse.ArgumentParser()
@@ -57,7 +124,7 @@ if torch.cuda.is_available() and not opt.cuda:
 if torch.backends.mps.is_available() and not opt.mps:
     print("WARNING: You have mps device, to enable macOS GPU run with --mps")
   
-if opt.dataroot is None and str(opt.dataset).lower() != 'fake':
+if opt.dataroot is None and str(opt.dataset).lower() not in ['fake', 'skin']:
     raise ValueError("`dataroot` parameter is required for dataset \"%s\"" % opt.dataset)
 
 if opt.dataset in ['imagenet', 'folder', 'lfw']:
@@ -102,6 +169,11 @@ elif opt.dataset == 'fake':
     dataset = dset.FakeData(image_size=(3, opt.imageSize, opt.imageSize),
                             transform=transforms.ToTensor())
     nc=3
+
+elif opt.dataset == 'skin':
+    mytransform = get_transform()
+    dataset = CustomDataset(csv_file="../../data/train-metadata.csv", hdf5_file="../../data/train-image.hdf5", transform=mytransform)
+    nc = 3
 
 assert dataset
 dataloader = torch.utils.data.DataLoader(dataset, batch_size=opt.batchSize,
@@ -148,11 +220,19 @@ class Generator(nn.Module):
             nn.BatchNorm2d(ngf * 2),
             nn.ReLU(True),
             # state size. (ngf*2) x 16 x 16
+            nn.ConvTranspose2d(ngf * 2,     ngf*4, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ngf*4),
+            nn.ReLU(True),
+            # state size. (ngf) x 32 x 32
+            nn.ConvTranspose2d(ngf * 4,     ngf*2, 4, 4, 0, bias=False),
+            nn.BatchNorm2d(ngf*2),
+            nn.ReLU(True),
+            # #128*128
             nn.ConvTranspose2d(ngf * 2,     ngf, 4, 2, 1, bias=False),
             nn.BatchNorm2d(ngf),
             nn.ReLU(True),
-            # state size. (ngf) x 32 x 32
-            nn.ConvTranspose2d(    ngf,      nc, 4, 2, 1, bias=False),
+            #256*256
+            nn.ConvTranspose2d( ngf,      nc, 5, 1, 2, bias=False),
             nn.Tanh()
             # state size. (nc) x 64 x 64
         )
@@ -169,7 +249,9 @@ netG = Generator(ngpu).to(device)
 netG.apply(weights_init)
 if opt.netG != '':
     netG.load_state_dict(torch.load(opt.netG))
+    print("Loaded model from {}".format(opt.netG))
 print(netG)
+
 
 
 class Discriminator(nn.Module):
@@ -193,7 +275,15 @@ class Discriminator(nn.Module):
             nn.BatchNorm2d(ndf * 8),
             nn.LeakyReLU(0.2, inplace=True),
             # state size. (ndf*8) x 4 x 4
-            nn.Conv2d(ndf * 8, 1, 4, 1, 0, bias=False),
+            nn.Conv2d(ndf * 8, ndf * 8, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ndf * 8),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            nn.Conv2d(ndf * 8, ndf * 4, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ndf * 4),
+            nn.LeakyReLU(0.2, inplace=True),
+            
+            nn.Conv2d(ndf * 4, 1, 4, 1, 0, bias=False),
             nn.Sigmoid()
         )
 
@@ -210,6 +300,7 @@ netD = Discriminator(ngpu).to(device)
 netD.apply(weights_init)
 if opt.netD != '':
     netD.load_state_dict(torch.load(opt.netD))
+    print("Loaded model from {}".format(opt.netD))
 print(netD)
 
 criterion = nn.BCELoss()
@@ -267,17 +358,38 @@ for epoch in range(opt.niter):
         print('[%d/%d][%d/%d] Loss_D: %.4f Loss_G: %.4f D(x): %.4f D(G(z)): %.4f / %.4f'
               % (epoch, opt.niter, i, len(dataloader),
                  errD.item(), errG.item(), D_x, D_G_z1, D_G_z2))
-        if i % 100 == 0:
-            vutils.save_image(real_cpu,
-                    '%s/real_samples.png' % opt.outf,
-                    normalize=True)
-            fake = netG(fixed_noise)
-            vutils.save_image(fake.detach(),
-                    '%s/fake_samples_epoch_%03d.png' % (opt.outf, epoch),
-                    normalize=True)
-
         if opt.dry_run:
             break
+    if epoch % 30 == 0:
+        vutils.save_image(real_cpu,
+                '%s/real_samples.png' % opt.outf,
+                normalize=True)
+        
+        fake = netG(fixed_noise)
+
+        # Denormalize the generated images
+        # def denormalize(tensor):
+        #     mean = torch.tensor([0.485, 0.456, 0.406], device=tensor.device).view(1, 3, 1, 1)
+        #     std = torch.tensor([0.229, 0.224, 0.225], device=tensor.device).view(1, 3, 1, 1)
+        #     tensor = tensor * std + mean
+        #     return tensor
+
+        # fake = denormalize(fake)
+
+        # Save the denormalized images
+        # vutils.save_image(fake.detach(),
+        #                 '%s/fake_samples_epoch_%03d.png' % (opt.outf, epoch),
+        #                 normalize=False)  # Do not normalize again
+
+
+        vutils.save_image(fake.detach(),
+                '%s/fake_samples_epoch_%03d.png' % (opt.outf, epoch),
+                normalize=True)
+
+
     # do checkpointing
-    torch.save(netG.state_dict(), '%s/netG_epoch_%d.pth' % (opt.outf, epoch))
-    torch.save(netD.state_dict(), '%s/netD_epoch_%d.pth' % (opt.outf, epoch))
+    if (epoch+1) % 1 == 0:
+        torch.save(netG.state_dict(), '%s/netG_epoch_%d.pth' % (opt.outf, epoch))
+        torch.save(netD.state_dict(), '%s/netD_epoch_%d.pth' % (opt.outf, epoch))
+
+
